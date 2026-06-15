@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+- Do not create `.codex` or `.agents` directory
+
 ## Project Structure & Module Organization
 
 - `main.py`: API application, request validation, model artifact loading, and `/health` plus `/predict` endpoints.

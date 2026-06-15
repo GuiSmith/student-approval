@@ -1,0 +1,10 @@
+services:
+  ml-api:
+    build:
+      context: .
+    container_name: ml-api
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
