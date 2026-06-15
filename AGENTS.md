@@ -15,37 +15,36 @@ Generated logs go to `logs/` by default and should not be treated as source.
 
 ## Build, Test, and Development Commands
 
-Set up local dependencies:
+Start or rebuild the containerized app from the repository root:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make up
 ```
 
-Run the API locally:
+`make up` runs `docker compose up -d --build` through the project `Makefile`.
+
+Run checks inside the running container, not from the host Python environment:
 
 ```bash
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+docker exec ml-api python -m py_compile main.py
 ```
 
-Run integration tests in another terminal while the API is running:
+Run integration tests inside the container:
 
 ```bash
-python test_api.py
+docker exec ml-api python test_api.py
 ```
 
-Override test targets or log location:
+Override test targets or log location inside the container when needed:
 
 ```bash
-API_BASE_URL=http://127.0.0.1:8000 LOG_DIR=logs python test_api.py
+docker exec ml-api sh -c 'API_BASE_URL=http://127.0.0.1:8000 LOG_DIR=logs python test_api.py'
 ```
 
-Build and run the container:
+Use Docker Compose directly only when `make` is unavailable:
 
 ```bash
-docker build -t student-approval .
-docker run --rm -p 8000:8000 student-approval
+docker compose up -d --build
 ```
 
 ## Coding Style & Naming Conventions
@@ -56,7 +55,7 @@ No formatter or linter is configured. If adding one, document the command here a
 
 ## Testing Guidelines
 
-Tests are integration-style checks implemented in `test_api.py` with `requests`; they are not pytest tests. Start the API first, then run `python test_api.py`. Add cases to the `tests` list in `main()` and create focused payload helper functions for custom inputs. Use descriptive log filenames, such as `campos_faltantes.log.1`.
+Tests are integration-style checks implemented in `test_api.py` with `requests`; they are not pytest tests. Start the API with `make up`, then run `docker exec ml-api python test_api.py`. Add cases to the `tests` list in `main()` and create focused payload helper functions for custom inputs. Use descriptive log filenames, such as `campos_faltantes.log.1`.
 
 Cover both successful predictions and validation failures when changing request fields, domain ranges, artifact loading, or response shape.
 
@@ -64,7 +63,7 @@ Cover both successful predictions and validation failures when changing request 
 
 The current history only contains `first commit`, so there is no established convention. Use short imperative commit messages, for example `Add payload validation tests` or `Update model artifact lookup`.
 
-Pull requests should include a concise summary, test results (`python test_api.py`, Docker run, or why not run), and notes for model artifact changes. Link related issues when available and include request/response examples for API behavior changes.
+Pull requests should include a concise summary, containerized test results (`make up` plus `docker exec ml-api python test_api.py`, or why not run), and notes for model artifact changes. Link related issues when available and include request/response examples for API behavior changes.
 
 ## Security & Configuration Tips
 
