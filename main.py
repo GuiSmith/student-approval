@@ -5,6 +5,7 @@ from typing import Any
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 
 
@@ -47,6 +48,99 @@ INT_RANGES = {
     "Dalc": (1, 5),
     "Walc": (1, 5),
     "health": (1, 5),
+}
+PREDICTION_BODY_FIELDS = (
+    "school",
+    "sex",
+    "age",
+    "address",
+    "famsize",
+    "Pstatus",
+    "Medu",
+    "Fedu",
+    "Mjob",
+    "Fjob",
+    "reason",
+    "guardian",
+    "traveltime",
+    "studytime",
+    "failures",
+    "schoolsup",
+    "famsup",
+    "paid",
+    "activities",
+    "nursery",
+    "higher",
+    "internet",
+    "romantic",
+    "famrel",
+    "freetime",
+    "goout",
+    "Dalc",
+    "Walc",
+    "health",
+    "absences",
+    "subject",
+)
+PREDICTION_BODY_EXAMPLE = {
+    "school": "GP",
+    "sex": "F",
+    "age": 17,
+    "address": "U",
+    "famsize": "GT3",
+    "Pstatus": "T",
+    "Medu": 4,
+    "Fedu": 4,
+    "Mjob": "teacher",
+    "Fjob": "other",
+    "reason": "course",
+    "guardian": "mother",
+    "traveltime": 1,
+    "studytime": 2,
+    "failures": 0,
+    "schoolsup": "no",
+    "famsup": "yes",
+    "paid": "no",
+    "activities": "yes",
+    "nursery": "yes",
+    "higher": "yes",
+    "internet": "yes",
+    "romantic": "no",
+    "famrel": 4,
+    "freetime": 3,
+    "goout": 3,
+    "Dalc": 1,
+    "Walc": 1,
+    "health": 5,
+    "absences": 4,
+    "subject": "math",
+}
+PREDICTION_BODY_SCHEMA = {
+    "type": "object",
+    "required": list(PREDICTION_BODY_FIELDS),
+    "additionalProperties": False,
+    "properties": {
+        **{
+            field: {
+                "type": "string",
+                "enum": list(choices),
+                "description": f"Accepted values: {', '.join(choices)}.",
+            }
+            for field, choices in CATEGORICAL_CHOICES.items()
+        },
+        **{
+            field: {
+                "type": "integer",
+                "minimum": minimum,
+                "maximum": maximum,
+                "description": (
+                    f"Integer value between {minimum} and {maximum}."
+                ),
+            }
+            for field, (minimum, maximum) in INT_RANGES.items()
+        },
+    },
+    "example": PREDICTION_BODY_EXAMPLE,
 }
 
 
@@ -95,6 +189,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Student Approval Prediction API", lifespan=lifespan)
+
+
+def _custom_openapi() -> dict[str, Any]:
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+    openapi_schema["paths"]["/predict"]["post"]["requestBody"] = {
+        "content": {
+            "application/json": {
+                "schema": PREDICTION_BODY_SCHEMA,
+                "example": PREDICTION_BODY_EXAMPLE,
+            }
+        },
+        "required": True,
+    }
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = _custom_openapi
 
 
 @app.get("/health")
