@@ -182,6 +182,28 @@ def _is_success_response(status_code: int | None, response_json: Any) -> bool:
     )
 
 
+def _has_valid_explanation(response_json: Any) -> bool:
+    explanation = response_json.get("explanation")
+    if not isinstance(explanation, dict):
+        return False
+
+    top_factors = explanation.get("top_factors")
+    return (
+        explanation.get("method") == "shap"
+        and isinstance(explanation.get("prediction_label"), str)
+        and isinstance(top_factors, list)
+        and 0 < len(top_factors) <= 5
+        and all(
+            isinstance(factor, dict)
+            and isinstance(factor.get("feature"), str)
+            and "value" in factor
+            and factor.get("direction") in {"increase", "decrease"}
+            and isinstance(factor.get("impact"), (int, float))
+            for factor in top_factors
+        )
+    )
+
+
 def _run_test(test: dict[str, Any]) -> dict[str, Any]:
     url = f"{API_BASE_URL}{test['path']}"
     status_code, response_json, error = _request_json(
@@ -220,7 +242,9 @@ def main() -> int:
             "path": "/predict",
             "payload": _valid_payload(),
             "assertion": lambda status, body, error: (
-                error is None and _is_success_response(status, body)
+                error is None
+                and _is_success_response(status, body)
+                and _has_valid_explanation(body)
             ),
         },
         {

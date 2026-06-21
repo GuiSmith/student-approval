@@ -1,9 +1,13 @@
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
+import shap
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
@@ -13,6 +17,9 @@ ARTIFACT_PATHS = (
     Path("model/student_approval_model.pkl"),
     Path("modelo/student_approval_model.pkl"),
 )
+SHAP_TOP_FACTORS = 5
+SHAP_NSAMPLES = 100
+LOGGER = logging.getLogger(__name__)
 FORBIDDEN_FIELDS = {"G1", "G2", "G3"}
 CATEGORICAL_CHOICES = {
     "school": ("GP", "MS"),
@@ -182,9 +189,25 @@ def _load_artifact() -> dict[str, Any]:
     return artifact
 
 
+def _build_shap_explainer(artifact: dict[str, Any]) -> Any:
+    model = artifact["model"]
+    model_columns = list(model.feature_names_in_)
+    background = pd.DataFrame(
+        np.zeros((1, len(model_columns))),
+        columns=model_columns,
+    )
+    return shap.KernelExplainer(model.predict_proba, background)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.artifact = _load_artifact()
+    app.state.shap_lock = Lock()
+    try:
+        app.state.shap_explainer = _build_shap_explainer(app.state.artifact)
+    except Exception:
+        LOGGER.exception("Failed to initialize SHAP explainer")
+        app.state.shap_explainer = None
     yield
 
 
@@ -433,6 +456,123 @@ def _probabilities(model: Any, proba: Any, target_labels: Any) -> dict[str, floa
     }
 
 
+def _class_index(model: Any, prediction: Any) -> int:
+    classes = list(getattr(model, "classes_", []))
+    prediction = _jsonable(prediction)
+    return classes.index(prediction)
+
+
+def _shap_values_for_class(
+    shap_values: Any,
+    class_index: int,
+    feature_count: int,
+) -> np.ndarray:
+    if isinstance(shap_values, list):
+        values = np.asarray(shap_values[class_index])
+    else:
+        values = np.asarray(shap_values)
+        if values.ndim == 3:
+            values = values[0, :, class_index]
+        elif values.ndim == 2 and values.shape == (feature_count, 2):
+            values = values[:, class_index]
+
+    values = np.asarray(values).reshape(-1)
+    if len(values) != feature_count:
+        raise ValueError(
+            "SHAP output does not match the processed feature count."
+        )
+    return values
+
+
+def _original_feature_name(
+    processed_feature: str,
+    categorical_features: list[str],
+) -> str:
+    for feature in categorical_features:
+        if processed_feature.startswith(f"{feature}_"):
+            return feature
+    return processed_feature
+
+
+def _build_explanation(
+    payload: dict[str, Any],
+    model_input: pd.DataFrame,
+    prediction: Any,
+    artifact: dict[str, Any],
+    explainer: Any,
+) -> dict[str, Any]:
+    if explainer is None:
+        raise RuntimeError("SHAP explainer is unavailable.")
+
+    model = artifact["model"]
+    class_index = _class_index(model, prediction)
+    raw_shap_values = explainer.shap_values(
+        model_input,
+        nsamples=SHAP_NSAMPLES,
+        silent=True,
+    )
+    shap_values = _shap_values_for_class(
+        raw_shap_values,
+        class_index,
+        model_input.shape[1],
+    )
+
+    impacts: dict[str, float] = {}
+    categorical_features = list(artifact["categorical_features"])
+    for processed_feature, shap_value in zip(model_input.columns, shap_values):
+        feature = _original_feature_name(
+            str(processed_feature),
+            categorical_features,
+        )
+        impacts[feature] = impacts.get(feature, 0.0) + float(shap_value)
+
+    top_factors = sorted(
+        impacts.items(),
+        key=lambda item: abs(item[1]),
+        reverse=True,
+    )[:SHAP_TOP_FACTORS]
+
+    prediction_value = _jsonable(prediction)
+    return {
+        "method": "shap",
+        "prediction_label": _label_for(
+            prediction_value,
+            artifact["target_labels"],
+        ),
+        "top_factors": [
+            {
+                "feature": feature,
+                "value": _jsonable(payload[feature]),
+                "direction": "increase" if impact >= 0 else "decrease",
+                "impact": round(float(impact), 4),
+            }
+            for feature, impact in top_factors
+        ],
+    }
+
+
+def _safe_build_explanation(
+    payload: dict[str, Any],
+    model_input: pd.DataFrame,
+    prediction: Any,
+    artifact: dict[str, Any],
+    explainer: Any,
+    shap_lock: Any,
+) -> dict[str, Any] | None:
+    try:
+        with shap_lock:
+            return _build_explanation(
+                payload,
+                model_input,
+                prediction,
+                artifact,
+                explainer,
+            )
+    except Exception:
+        LOGGER.exception("Failed to calculate SHAP explanation")
+        return None
+
+
 @app.post("/predict")
 def predict(input_data: PredictionInput, request: Request) -> dict[str, Any]:
     artifact = request.app.state.artifact
@@ -451,6 +591,14 @@ def predict(input_data: PredictionInput, request: Request) -> dict[str, Any]:
     probabilities = model.predict_proba(model_input)
 
     prediction_value = _jsonable(prediction)
+    explanation = _safe_build_explanation(
+        payload,
+        model_input,
+        prediction_value,
+        artifact,
+        getattr(request.app.state, "shap_explainer", None),
+        getattr(request.app.state, "shap_lock", Lock()),
+    )
     return {
         "success": True,
         "prediction": prediction_value,
@@ -458,4 +606,5 @@ def predict(input_data: PredictionInput, request: Request) -> dict[str, Any]:
         "probabilities": _probabilities(
             model, probabilities, artifact["target_labels"]
         ),
+        "explanation": explanation,
     }
